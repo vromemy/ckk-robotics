@@ -170,44 +170,47 @@ def pressed_once(name, current):
     return clicked
 
 
-pickState = 0
-normalPick = False
+artifactUp = False
+pickUp = False
 armUp = False
 
+#SV4
+HANGUP = 160
+HANGMED = 120
+HANGPICK = 130
+HANGDOWN = 95
+
+#SV5
+ARMDOWN = 10
+ARMUP = 120
+
+#SV6
+RELEASE = 110
+PICK = 85
+
 def control():
-    global setpoint, yaw_offset, pickState, normalPick, armUp
+    global setpoint, yaw_offset, artifactUp, pickUp, armUp
     if pressed_once("square", bluepad32.square()):
         yaw_offset += current_yaw
         setpoint = 0
 
     if pressed_once("l1", bluepad32.l1()):
-        if pickState == 0:
-            servo.angle(servo.SV6, 85)
-            task.create(60, lambda x: servo.angle(servo.SV5, 130))
-            task.create(300, lambda x: servo.angle(servo.SV6, 135))
-            task.create(300, lambda x: servo.angle(servo.SV4, 140))
-            task.create(300, lambda x: servo.angle(servo.SV5, 10))
-
-            pickState = 1
-        elif pickState == 1:
-            servo.angle(servo.SV6, 85)
-            
-            pickState = 2
-        elif pickState == 2:
-            servo.angle(servo.SV6, 135)
-            servo.angle(servo.SV4, 130)
-
-            task.create(50, lambda x: servo.angle(servo.SV5, 130))
-
-            task.create(150, lambda x: servo.angle(servo.SV6, 85))
-            task.create(210, lambda x: servo.angle(servo.SV4, 95))
-            task.create(250, lambda x: servo.angle(servo.SV5, 10))
-            
-            pickState = 3
-        elif pickState == 3:
-            servo.angle(servo.SV6, 135)
-
-            pickState = 0
+        if not artifactUp:
+            servo.angle(servo.SV6, PICK)
+            task.create(100, lambda x: servo.angle(servo.SV5, ARMUP))
+            task.create(275, lambda x: servo.angle(servo.SV4, HANGMED))
+            task.create(375, lambda x: servo.angle(servo.SV6, RELEASE))
+            task.create(400, lambda x: servo.angle(servo.SV4, HANGUP))
+            task.create(400, lambda x: servo.angle(servo.SV5, ARMDOWN))
+            pickUp = False
+        else:
+            servo.angle(servo.SV4, HANGPICK)
+            servo.angle(servo.SV5, ARMUP)
+            task.create(200, lambda x: servo.angle(servo.SV6, PICK))
+            task.create(250, lambda x: servo.angle(servo.SV4, HANGDOWN))
+            task.create(300, lambda x: servo.angle(servo.SV5, ARMDOWN))
+            pickUp = True
+        artifactUp = not artifactUp
 
     if bluepad32.circle():
         Pin(14, Pin.OUT).value(0)
@@ -220,17 +223,17 @@ def control():
         Pin(15, Pin.OUT).value(1)
 
     if pressed_once("r1", bluepad32.r1()):
-        if normalPick:
-            servo.angle(servo.SV6, 135)
+        if not pickUp:
+            servo.angle(servo.SV6, PICK)
         else:
-            servo.angle(servo.SV6, 85)
-        normalPick = not normalPick
+            servo.angle(servo.SV6, RELEASE)
+        pickUp = not pickUp
 
     if pressed_once("triangle", bluepad32.triangle()):
         if armUp:
-            servo.angle(servo.SV5, 75)
+            servo.angle(servo.SV5, 60)
         else:
-            servo.angle(servo.SV5, 10)
+            servo.angle(servo.SV5, ARMDOWN)
         armUp = not armUp
 
 gamepad_state = True
@@ -274,8 +277,8 @@ def main():
 
 print("initializing")
 
-main()
+servo.angle(servo.SV6, RELEASE)
+servo.angle(servo.SV5, ARMDOWN)
+servo.angle(servo.SV4, HANGDOWN)
 
-servo.angle(servo.SV6, 135)
-servo.angle(servo.SV5, 10)
-servo.angle(servo.SV4, 95)
+main()
