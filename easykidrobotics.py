@@ -3,7 +3,6 @@ from time import ticks_ms, ticks_diff, sleep_ms
 from math import cos, sin, radians, pi, atan2
 from board import motor, servo, rgbled_board
 import bluepad32
-import switch
 
 uart = UART(2, baudrate=115200, tx=13, rx=26)
 rx_buf = bytearray(8)
@@ -65,6 +64,11 @@ class PIDController:
         self.prev_error = 0.0
         self.prev_time = ticks_ms()
 
+    def reset(self):
+        self.integral = 0.0
+        self.prev_error = 0.0
+        self.prev_time = ticks_ms()
+
     def calculate(self, setpoint, measurement):
         now = ticks_ms()
         dt = ticks_diff(now, self.prev_time) / 1000.0
@@ -86,11 +90,11 @@ class TaskManager:
     def __init__(s):
         s.tasks = []
 
-    def create(s, ms, callback, params = 0):
+    def create(s, ms, callback, currPacket = -1):
         s.tasks.append({
             "t": ticks_ms() + ms,
             "f": callback,
-            "p": params
+            "p": currPacket
         })
 
     def update(s):
@@ -101,8 +105,6 @@ class TaskManager:
                 task["f"](task["p"])
 
 task = TaskManager()
-
-
 controller = PIDController(kp=1, ki=0, kd=0.08)
 setpoint = 0.0
 
@@ -115,7 +117,7 @@ def speed_control(value, onControlledR2, onControlledL2):
     else: return value * 0.65
 
 last_rx = 0
-def linear_heading(rx, yaw):
+def linear_heading(rx, ry, yaw):
     global last_rx, setpoint
     if bluepad32.r2(): rx = clamp(rx, -0.2, 0.2)
     else: rx = clamp(rx, -0.5, 0.5)
@@ -127,6 +129,23 @@ def linear_heading(rx, yaw):
     if abs(rx) > 0.1: last_rx = ticks_ms()
     return r
 
+active = False
+def atan2_heading(rx, ry, yaw):
+    global setpoint, active
+
+    if rx * rx + ry * ry > 0.8:
+        active = True
+        setpoint = atan2(rx, ry)
+        r = controller.calculate(setpoint, yaw)
+    else:
+        if active:
+            setpoint = yaw
+            controller.reset()
+        active = False
+        r = 0
+
+    return r
+
 def movement():
     global setpoint
 
@@ -135,9 +154,10 @@ def movement():
     lx = speed_control(rawx, 0.3, 1)
     ly = speed_control(rawy, 0.2, 0.9)
     rx = -bluepad32.axisRX() / 512.0
+    ry = -bluepad32.axisRY() / 512.0
     yaw = radians(current_yaw)
 
-    r = linear_heading(rx, yaw)
+    r = atan2_heading(rx, ry, yaw)
     if abs(lx) < 0.1 and abs(ly) < 0.1 and abs(r) < 0.01: r = 0
 
     # movement
@@ -169,7 +189,6 @@ def pressed_once(name, current):
     
     return clicked
 
-
 artifactUp = False
 pickUp = False
 armUp = False
@@ -182,63 +201,106 @@ HANGDOWN = 95
 
 #SV5
 ARMDOWN = 10
+ARMMED = 50
 ARMUP = 120
 
 #SV6
 RELEASE = 110
 PICK = 85
 
+pin14 = Pin(14, Pin.OUT)
+pin15 = Pin(15, Pin.OUT)
+
+liftLevel = 0
+liftPacket = 0
+
+UP_TRANSITIONS = {
+    0: 1,
+    1: 3,
+    2: 3
+}
+
+DOWN_TRANSITIONS = {
+    3: 2,
+    2: 0,
+    1: 0
+}
+
+def braking(currPacket):
+    global liftPacket
+
+    if currPacket != liftPacket: return
+    pin14.value(1)
+    pin15.value(1)
+
+def lift(direction):
+    global liftLevel, liftPacket
+
+    transitions = UP_TRANSITIONS if direction > 0 else DOWN_TRANSITIONS
+    if liftLevel not in transitions: return
+    nextLevel = transitions[liftLevel]
+
+    if direction > 0:
+        pin14.value(0)
+        pin15.value(1)
+    else:
+        pin14.value(1)
+        pin15.value(0)
+
+    liftPacket += 1
+    packet = liftPacket
+
+    delay = 100 if abs(nextLevel - liftLevel) == 1 else 300
+
+    task.create(delay, braking, packet)
+    liftLevel = nextLevel
+
 def control():
     global setpoint, yaw_offset, artifactUp, pickUp, armUp
+
     if pressed_once("square", bluepad32.square()):
         yaw_offset += current_yaw
         setpoint = 0
 
-    if pressed_once("l1", bluepad32.l1()):
+    if pressed_once("r1", bluepad32.r1()):
         if not artifactUp:
+            pickDelay = 100 if pickUp else 0
             servo.angle(servo.SV6, PICK)
-            task.create(100, lambda x: servo.angle(servo.SV5, ARMUP))
-            task.create(275, lambda x: servo.angle(servo.SV4, HANGMED))
-            task.create(375, lambda x: servo.angle(servo.SV6, RELEASE))
-            task.create(400, lambda x: servo.angle(servo.SV4, HANGUP))
-            task.create(400, lambda x: servo.angle(servo.SV5, ARMDOWN))
+            task.create(pickDelay, lambda x: servo.angle(servo.SV5, ARMUP))
+            task.create(175 + pickDelay, lambda x: servo.angle(servo.SV4, HANGMED))
+            task.create(275 + pickDelay, lambda x: servo.angle(servo.SV6, RELEASE))
+            task.create(300 + pickDelay, lambda x: servo.angle(servo.SV4, HANGUP))
+            task.create(300 + pickDelay, lambda x: servo.angle(servo.SV5, ARMDOWN))
+            
             pickUp = False
+            armUp = False
         else:
             servo.angle(servo.SV4, HANGPICK)
             servo.angle(servo.SV5, ARMUP)
             task.create(200, lambda x: servo.angle(servo.SV6, PICK))
             task.create(250, lambda x: servo.angle(servo.SV4, HANGDOWN))
             task.create(300, lambda x: servo.angle(servo.SV5, ARMDOWN))
+
             pickUp = True
+            armUp = False
         artifactUp = not artifactUp
 
-    if bluepad32.circle():
-        Pin(14, Pin.OUT).value(0)
-        Pin(15, Pin.OUT).value(1)
-    elif bluepad32.cross():
-        Pin(14, Pin.OUT).value(1)
-        Pin(15, Pin.OUT).value(0)
-    else:
-        Pin(14, Pin.OUT).value(1)
-        Pin(15, Pin.OUT).value(1)
-
-    if pressed_once("r1", bluepad32.r1()):
-        if not pickUp:
-            servo.angle(servo.SV6, PICK)
-        else:
-            servo.angle(servo.SV6, RELEASE)
+    if pressed_once("l1", bluepad32.l1()):
+        if not pickUp: servo.angle(servo.SV6, PICK)
+        else: servo.angle(servo.SV6, RELEASE)
         pickUp = not pickUp
 
-    if pressed_once("triangle", bluepad32.triangle()):
-        if armUp:
-            servo.angle(servo.SV5, 60)
-        else:
-            servo.angle(servo.SV5, ARMDOWN)
+    if pressed_once("circle", bluepad32.circle()):
+        if not armUp: servo.angle(servo.SV5, ARMMED)
+        else: servo.angle(servo.SV5, ARMDOWN)
         armUp = not armUp
 
+    if pressed_once("triangle", bluepad32.triangle()): lift(1)
+    if pressed_once("cross", bluepad32.cross()): lift(-1)
+
 gamepad_state = True
-team_switch = 0
 started = False
+team_switch = 0
 
 def configuration():
     global gamepad_state, team_switch, started
@@ -254,7 +316,6 @@ def configuration():
 
     if team_switch != 0:
         if pressed_once("square", bluepad32.square()):
-            servo.angle(servo.SV2, LIFT_UP)
             started = True
         return
 
