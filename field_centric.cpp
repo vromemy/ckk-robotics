@@ -1,16 +1,24 @@
+
 #include <PTBOTAtomVX.h>
 #include <Bluepad32.h>
 #include <unordered_map>
 #include <functional>
 #include <string>
 
+//SV1
+#define RELEASE 120
+#define PICK 90
+
+//SV2
 #define ARM_DOWN 10
-#define ARM_UP 110
-#define GRIP_OPEN 135
-#define GRIP_CLOSE 90
-#define HANG_DOWN 90
+#define ARM_MED 50
+#define ARM_UP 120
+
+//SV3
+#define HANG_UP 160
 #define HANG_MED 120
-#define HANG_UP 135
+#define HANG_PICK 130
+#define HANG_DOWN 90
 
 typedef struct _ControllerData {
     int8_t index, l1, r1, up, down, left, right, triangle, cross, square, circle; // 0, 1 boolean
@@ -132,12 +140,12 @@ double calculatePID(PIDController_t* pid, double setpoint, double current) {
     pid->prev_time = now;
     
     if (dt <= 0 || dt > 0.1) dt = 0.01;
-    
+
     double error = wrapRads(setpoint - current);
-    
+
     pid->integral += error * dt;
     pid->integral = clampf64(pid->integral, -1, 1);
-    
+
     double derivative = (error - pid->prev_err) / dt;
     pid->prev_err = error;
     
@@ -145,22 +153,19 @@ double calculatePID(PIDController_t* pid, double setpoint, double current) {
 }
 
 double linearHeading(double yaw) {
-    static bool wasTurning = false;
+    static int last_rx = 0; 
     double rx = controller.rx;
-    bool turning = fabs(rx) > 0.1;
+    int now = millis();
 
-    if (turning) {
-        wasTurning = true;
-        return rx;
-    }
-
-    if (wasTurning) {
-        setpoint = yaw;
-        wasTurning = false;
-    }
+    if (controller.r2) rx = clampf64(rx, -0.35, 0.35);
 
     double rotation = calculatePID(&pid, setpoint, yaw);
     if (fabs(wrapRads(setpoint - yaw)) < 0.01) rotation = 0;
+    if (fabs(rx) > 0.1 || now - last_rx < 300) {
+        rotation = rx;
+        setpoint = yaw;
+    }
+    if (fabs(rx) > 0.1) last_rx = now;
     return rotation;
 }
 
@@ -173,85 +178,85 @@ double speedControl(double value, double onControlled) {
 }
 
 void control() {
+    static bool pickUp = false;
+    static bool armUp = false;
+    static bool artifactUp = false;
+
     if (pressOnce("reset", controller.square)) {
         yawOffset = angleRead(YAW);
         setpoint = 0.0;
     }
 
-    static uint32_t serialPickState = 0;
-    static bool serialRunning = false;
-    if (!serialRunning && pressOnce("serialPick", controller.circle)) {
-        serialRunning = true;
+    if (pressOnce("r1", controller.r1)) {
+        if (!artifactUp) {
+            int pickDelay = (pickUp) ? 100 : 0;
+            grip(PICK);
+            taskCreate("sq1", []() {
+                arm(ARM_UP);
+            }, pickDelay);
 
-        switch (serialPickState) {
-            case 0: {
-                grip(GRIP_CLOSE);
-                taskCreate("sequence1", []() {
-                    arm(ARM_UP);
-                }, 125);
-                taskCreate("sequence2", []() {
-                    grip(GRIP_OPEN);
-                    hang(HANG_UP);
-                }, 375);
-                taskCreate("sequence3", []() {
-                    arm(ARM_DOWN);
-                    serialRunning = false;
-                }, 400);
-                break;
-            }
-
-            case 1: {
-                grip(GRIP_CLOSE);
-                break;
-            }
-
-            case 2: {
-                grip(GRIP_OPEN);
+            taskCreate("sq2", []() {
                 hang(HANG_MED);
-                taskCreate("sequence4", []() {
-                    arm(ARM_UP);
-                }, 25);
-                taskCreate("sequence5", []() {
-                    grip(GRIP_CLOSE);
-                    hang(HANG_DOWN);
-                }, 275);
-                taskCreate("sequence6", []() {
-                    arm(ARM_DOWN);
-                    serialRunning = false;
-                }, 350);
-                break;
-            }
+            }, 175 + pickDelay);
 
-            case 3: {
-                grip(GRIP_OPEN);
-                break;
-            }
+            taskCreate("sq3", []() {
+                grip(RELEASE);
+            }, 275 + pickDelay);
+
+            taskCreate("sq4", []() {
+                hang(HANG_UP);
+            }, 300 + pickDelay);
+
+            taskCreate("sq5", []() {
+                arm(ARM_DOWN);
+            }, 300 + pickDelay);
+
+            pickUp = false;
+            armUp = false;
+        } else {
+            hang(HANG_PICK);
+            arm(ARM_UP);
+
+            taskCreate("sq6", []() {
+                grip(PICK);
+            }, 200);
+
+            taskCreate("sq7", []() {
+                hang(HANG_DOWN);
+            }, 250);
+
+            taskCreate("sq8", []() {
+                arm(ARM_DOWN);
+            }, 300);
+
+            pickUp = true;
+            armUp = false;
         }
 
-        serialPickState = (serialPickState + 1) % 4;
+        artifactUp = not artifactUp;
     }
 }
 
 void movement() {
     double yaw = getYaw();
 
-    double lx = speedControl(controller.lx, 0.25);
-    double ly = -speedControl(controller.ly, 0.15);
+    double lx = speedControl(controller.lx, 0.35);
+    double ly = -speedControl(controller.ly, 0.25);
 
     double x = (cos(yaw) * lx) - (sin(yaw) * ly);
     double y = (sin(yaw) * lx) + (cos(yaw) * ly);
     double r = linearHeading(yaw);
     double d = maxf64(fabs(x) + fabs(y) + fabs(r), 1);
 
-    double fl = (((y + x + r) / d));
-    double fr = (((y - x - r) / d));
-    double rl = (((y - x + r) / d));
-    double rr = (((y + x - r) / d));
+    double fl = (((y + x - r) / d));
+    double fr = (((y - x + r) / d));
+    double rl = (((y - x - r) / d));
+    double rr = (((y + x + r) / d));
 
-    motorWrite(1, fl * 50);
-    motorWrite(2, fr * 50);
-    motorWrite(3, rl * 50);
-    motorWrite(4, rr * 50);
+    motorWrite(1, fl * 100);
+    motorWrite(2, fr * 100);
+    motorWrite(3, rl * 100);
+    motorWrite(4, rr * 100);
 }
 
 void setup() {
@@ -261,11 +266,11 @@ void setup() {
 
     BP32.setup(&onConnectedController, &onDisconnectedController);
 
-    pid.kp = 1;
-    pid.kd = 0.1;
+    pid.kp = 1.5;
+    pid.kd = 0.15;
 
     arm(ARM_DOWN);
-    grip(GRIP_OPEN);
+    grip(RELEASE);
     hang(HANG_DOWN);
 }
 
