@@ -6,13 +6,13 @@
 #include <string>
 
 //SV1
-#define RELEASE 120
-#define PICK 90
+#define RELEASE 125
+#define PICK 100
 
 //SV2
-#define ARM_DOWN 10
-#define ARM_MED 50
-#define ARM_UP 120
+#define ARM_DOWN 0
+#define ARM_MED 40
+#define ARM_UP 100
 
 //SV3
 #define HANG_UP 160
@@ -55,7 +55,7 @@ void taskUpdate() {
     uint32_t now = millis();
     for (auto& [name, task] : tasks) {
         if (!task.active) continue;
-        if ((now - task.triggerTime) >= 0) {
+        if ((int32_t)(now - task.triggerTime) >= 0) {
             task.func();
             if (task.repeat) task.triggerTime += task.interval;
             else task.active = false;
@@ -109,9 +109,9 @@ void getControllerData(ControllerData_t* ControllerData) {
     }
 }
 
-inline void grip(int deg) { servoWrite(1, deg); }
-inline void arm(int deg)  { servoWrite(2, deg); }
-inline void hang(int deg) { servoWrite(3, deg); }
+inline void grip(int deg) { servoWrite(0, deg); }
+inline void arm(int deg)  { servoWrite(1, deg); }
+inline void hang(int deg) { servoWrite(2, deg); }
 double maxf64(double val1, double val2) { return (val1 > val2) ? val1 : val2; }
 double minf64(double val1, double val2) { return (val1 < val2) ? val1 : val2; }
 double clampf64(double val, double min, double max) { return maxf64(minf64(val, max), min); }
@@ -187,6 +187,18 @@ void control() {
         setpoint = 0.0;
     }
 
+    if (pressOnce("l1", controller.l1)) {
+        if (!pickUp) grip(PICK);
+        else grip(RELEASE);
+        pickUp = !pickUp;
+    }
+
+    if (pressOnce("tri", controller.circle)) {
+        if (!armUp) arm(ARM_MED);
+        else arm(ARM_DOWN);
+        armUp = !armUp;
+    }
+
     if (pressOnce("r1", controller.r1)) {
         if (!artifactUp) {
             int pickDelay = (pickUp) ? 100 : 0;
@@ -205,9 +217,6 @@ void control() {
 
             taskCreate("sq4", []() {
                 hang(HANG_UP);
-            }, 300 + pickDelay);
-
-            taskCreate("sq5", []() {
                 arm(ARM_DOWN);
             }, 300 + pickDelay);
 
@@ -233,7 +242,7 @@ void control() {
             armUp = false;
         }
 
-        artifactUp = not artifactUp;
+        artifactUp = !artifactUp;
     }
 }
 
